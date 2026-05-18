@@ -1,17 +1,7 @@
-def getDockerTag() {
-    def rawOutput = bat(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
-    def lines = rawOutput.split(/[\r\n]+/)
-    def tag = lines[lines.length - 1].trim()
-    echo "Raw output: '${rawOutput}'"
-    echo "Extracted tag: '${tag}'"
-    return tag
-}
-
 pipeline {
     agent any
 
     environment {
-        DOCKER_TAG = ''
         DOCKER_USER = 'ranimkoubaa'
         REMOTE_HOST = 'jenkins@192.168.56.103'
         APP_NAME = 'angular-app'
@@ -22,10 +12,14 @@ pipeline {
         stage('Docker Build') {
             steps {
                 script {
-                    env.DOCKER_TAG = getDockerTag()
-                    echo "==> Building image: ${env.DOCKER_USER}/${env.APP_NAME}:${env.DOCKER_TAG}"
+                    // Fix tag : lire directement dans env sans passer par une fonction
+                    def rawOutput = bat(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+                    def lines = rawOutput.split(/[\r\n]+/)
+                    env.DOCKER_TAG = lines[lines.length - 1].trim()
+                    echo "==> Tag extrait: '${env.DOCKER_TAG}'"
+                    
+                    bat "docker build -t ${env.DOCKER_USER}/${env.APP_NAME}:${env.DOCKER_TAG} ."
                 }
-                bat "docker build -t ${env.DOCKER_USER}/${env.APP_NAME}:${env.DOCKER_TAG} ."
             }
         }
 
@@ -51,11 +45,12 @@ pipeline {
                                 icacls "${tmpKey}" /grant:r "%USERNAME%:F"
                             """
 
+                            // Fix container conflict : stop+rm par NOM et par PORT
                             bat """
                                 ssh -i "${tmpKey}" ^
                                     -o StrictHostKeyChecking=no ^
                                     ${env.REMOTE_HOST} ^
-                                    "sudo docker ps -q --filter publish=80 | xargs -r sudo docker stop ; sudo docker ps -aq --filter publish=80 | xargs -r sudo docker rm ; sudo docker pull ${env.DOCKER_USER}/${env.APP_NAME}:${env.DOCKER_TAG} && sudo docker run -d --name ${env.APP_NAME} -p 80:80 ${env.DOCKER_USER}/${env.APP_NAME}:${env.DOCKER_TAG}"
+                                    "sudo docker stop ${env.APP_NAME} 2>/dev/null ; sudo docker rm ${env.APP_NAME} 2>/dev/null ; sudo docker ps -q --filter publish=80 | xargs -r sudo docker stop ; sudo docker ps -aq --filter publish=80 | xargs -r sudo docker rm ; sudo docker pull ${env.DOCKER_USER}/${env.APP_NAME}:${env.DOCKER_TAG} && sudo docker run -d --name ${env.APP_NAME} -p 80:80 ${env.DOCKER_USER}/${env.APP_NAME}:${env.DOCKER_TAG}"
                             """
 
                         } finally {
