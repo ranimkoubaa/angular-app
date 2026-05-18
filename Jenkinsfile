@@ -1,6 +1,10 @@
 def getDockerTag() {
     def rawOutput = bat(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
-    return rawOutput.tokenize('\n').last().trim()
+    def lines = rawOutput.split(/[\r\n]+/)
+    def tag = lines[lines.length - 1].trim()
+    echo "Raw output: '${rawOutput}'"
+    echo "Extracted tag: '${tag}'"
+    return tag
 }
 
 pipeline {
@@ -37,30 +41,25 @@ pipeline {
         stage('Deploy') {
             steps {
                 script {
-                    // Copier la clé dans un fichier temporaire qu'ON contrôle
                     def tmpKey = "C:\\Windows\\Temp\\jenkins_ssh_${env.BUILD_NUMBER}.pem"
 
                     withCredentials([sshUserPrivateKey(credentialsId: 'Vagrant_ssh', keyFileVariable: 'SSH_KEY')]) {
                         try {
-                            // Copier + fixer les permissions
                             bat """
                                 copy "%SSH_KEY%" "${tmpKey}"
                                 icacls "${tmpKey}" /inheritance:r
                                 icacls "${tmpKey}" /grant:r "%USERNAME%:F"
                             """
 
-                            // Stop + remove ancien container, puis run le nouveau
                             bat """
                                 ssh -i "${tmpKey}" ^
                                     -o StrictHostKeyChecking=no ^
                                     ${env.REMOTE_HOST} ^
-                                    "sudo docker stop ${env.APP_NAME} 2>/dev/null || true ; sudo docker rm ${env.APP_NAME} 2>/dev/null || true ; sudo docker pull ${env.DOCKER_USER}/${env.APP_NAME}:${env.DOCKER_TAG} && sudo docker run -d --name ${env.APP_NAME} -p 80:80 ${env.DOCKER_USER}/${env.APP_NAME}:${env.DOCKER_TAG}"
+                                    "sudo docker ps -q --filter publish=80 | xargs -r sudo docker stop ; sudo docker ps -aq --filter publish=80 | xargs -r sudo docker rm ; sudo docker pull ${env.DOCKER_USER}/${env.APP_NAME}:${env.DOCKER_TAG} && sudo docker run -d --name ${env.APP_NAME} -p 80:80 ${env.DOCKER_USER}/${env.APP_NAME}:${env.DOCKER_TAG}"
                             """
 
                         } finally {
-                            // Supprimer la clé NOUS-MÊMES avant que Jenkins essaie
                             bat "del /f /q \"${tmpKey}\" 2>nul"
-                            // Remettre les permissions du fichier Jenkins pour qu'il puisse nettoyer
                             bat "icacls \"%SSH_KEY%\" /grant:r \"%USERNAME%:F\" 2>nul"
                         }
                     }
@@ -71,8 +70,9 @@ pipeline {
 
     post {
         success {
-            echo "✅ Pipeline réussi ! http://192.168.56.103"
+            echo "✅ Pipeline réussi !"
             echo "   Image: ${env.DOCKER_USER}/${env.APP_NAME}:${env.DOCKER_TAG}"
+            echo "   URL: http://192.168.56.103"
         }
         failure {
             echo "❌ Pipeline échoué. Vérifier les logs ci-dessus."
