@@ -1,8 +1,16 @@
+def getDockerTag() {
+    def rawOutput = bat(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+    return rawOutput.tokenize('\n').last().trim()
+}
+
 pipeline {
     agent any
 
     environment {
         DOCKER_TAG = ''
+        DOCKER_USER = 'ranimkoubaa'
+        REMOTE_HOST = 'jenkins@192.168.56.103'
+        APP_NAME = 'angular-app'
     }
 
     stages {
@@ -10,46 +18,50 @@ pipeline {
         stage('Docker Build') {
             steps {
                 script {
-                    def rawOutput = bat(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
-                    env.DOCKER_TAG = rawOutput.tokenize('\n').last().trim()
-                    echo "Docker tag: ${env.DOCKER_TAG}"
+                    env.DOCKER_TAG = getDockerTag()
+                    echo "==> Building image: ${env.DOCKER_USER}/${env.APP_NAME}:${env.DOCKER_TAG}"
                 }
-                bat "docker build -t ranimkoubaa/angular-app:${env.DOCKER_TAG} ."
+                bat "docker build -t ${env.DOCKER_USER}/${env.APP_NAME}:${env.DOCKER_TAG} ."
             }
         }
 
         stage('DockerHub Push') {
             steps {
                 withCredentials([string(credentialsId: 'mydockerhubpassword', variable: 'DockerHubPassword')]) {
-                    bat "docker login -u ranimkoubaa -p %DockerHubPassword%"
+                    bat "docker login -u ${env.DOCKER_USER} -p %DockerHubPassword%"
                 }
-                bat "docker push ranimkoubaa/angular-app:${env.DOCKER_TAG}"
+                bat "docker push ${env.DOCKER_USER}/${env.APP_NAME}:${env.DOCKER_TAG}"
             }
         }
 
         stage('Deploy') {
             steps {
-                withCredentials([sshUserPrivateKey(credentialsId: 'Vagrant_ssh', keyFileVariable: 'SSH_KEY')]) {
-                    script {
-                        // Copier la clé dans un fichier temporaire qu'on contrôle
-                        def tmpKey = "C:\\integ_continue\\tmp_ssh_key_${env.BUILD_NUMBER}.pem"
-                        
-                        bat """
-                            copy "%SSH_KEY%" "${tmpKey}"
-                            icacls "${tmpKey}" /inheritance:r
-                            icacls "${tmpKey}" /grant:r "%USERNAME%:R"
-                        """
-                        
+                script {
+                    // Copier la clé dans un fichier temporaire qu'ON contrôle
+                    def tmpKey = "C:\\Windows\\Temp\\jenkins_ssh_${env.BUILD_NUMBER}.pem"
+
+                    withCredentials([sshUserPrivateKey(credentialsId: 'Vagrant_ssh', keyFileVariable: 'SSH_KEY')]) {
                         try {
+                            // Copier + fixer les permissions
+                            bat """
+                                copy "%SSH_KEY%" "${tmpKey}"
+                                icacls "${tmpKey}" /inheritance:r
+                                icacls "${tmpKey}" /grant:r "%USERNAME%:F"
+                            """
+
+                            // Stop + remove ancien container, puis run le nouveau
                             bat """
                                 ssh -i "${tmpKey}" ^
                                     -o StrictHostKeyChecking=no ^
-                                    jenkins@192.168.56.103 ^
-                                    "sudo docker pull ranimkoubaa/angular-app:${env.DOCKER_TAG} && sudo docker stop angular-app || true && sudo docker rm angular-app || true && sudo docker run -d --name angular-app -p 80:80 ranimkoubaa/angular-app:${env.DOCKER_TAG}"
+                                    ${env.REMOTE_HOST} ^
+                                    "sudo docker stop ${env.APP_NAME} 2>/dev/null || true ; sudo docker rm ${env.APP_NAME} 2>/dev/null || true ; sudo docker pull ${env.DOCKER_USER}/${env.APP_NAME}:${env.DOCKER_TAG} && sudo docker run -d --name ${env.APP_NAME} -p 80:80 ${env.DOCKER_USER}/${env.APP_NAME}:${env.DOCKER_TAG}"
                             """
+
                         } finally {
-                            // On supprime nous-mêmes la clé AVANT que Jenkins essaie
-                            bat "del /f /q \"${tmpKey}\""
+                            // Supprimer la clé NOUS-MÊMES avant que Jenkins essaie
+                            bat "del /f /q \"${tmpKey}\" 2>nul"
+                            // Remettre les permissions du fichier Jenkins pour qu'il puisse nettoyer
+                            bat "icacls \"%SSH_KEY%\" /grant:r \"%USERNAME%:F\" 2>nul"
                         }
                     }
                 }
@@ -59,10 +71,11 @@ pipeline {
 
     post {
         success {
-            echo "Pipeline réussi ! Image: ranimkoubaa/angular-app:${env.DOCKER_TAG}"
+            echo "✅ Pipeline réussi ! http://192.168.56.103"
+            echo "   Image: ${env.DOCKER_USER}/${env.APP_NAME}:${env.DOCKER_TAG}"
         }
         failure {
-            echo "Pipeline échoué. Vérifier les logs."
+            echo "❌ Pipeline échoué. Vérifier les logs ci-dessus."
         }
     }
 }
